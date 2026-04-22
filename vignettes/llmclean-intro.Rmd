@@ -1,0 +1,353 @@
+---
+title: "LLM-Assisted Data Cleaning with llmclean"
+author: "Sadikul Islam"
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+vignette: >
+  %\VignetteIndexEntry{LLM-Assisted Data Cleaning with llmclean}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE, comment = "#>",
+  fig.width = 7, out.width = "100%",
+  warning = FALSE, message = FALSE
+)
+```
+
+# Introduction
+
+Data frames collected from surveys, administrative records, or manual
+entry almost always contain semantic inconsistencies that rule-based
+tools cannot catch. The `llmclean` package addresses this by sending a
+compact representation of your data to a large language model (LLM) and
+requesting structured, human-readable suggestions for each issue found.
+
+The key distinction from existing tools:
+
+| Tool | What it catches |
+|------|----------------|
+| `janitor` | Column name formatting |
+| `validate` / `pointblank` | Rule-based type/range checks |
+| **`llmclean`** | **Semantic meaning: typos, abbreviations, case, malformed formats, cross-field contradictions** |
+
+No existing CRAN package provides the detect → explain → suggest →
+apply workflow specialised for semantic data frame inconsistencies.
+
+## Supported Providers
+
+```
+openai     →  GPT-4o, GPT-4o-mini     (API key required)
+anthropic  →  Claude Haiku / Sonnet   (API key required)
+google     →  Gemini 2.0 Flash        (free tier available)
+groq       →  LLaMA 3.1, Mixtral      (free tier available)
+ollama     →  Any local model         (no key, fully offline)
+offline    →  Statistical fallback    (no API, no internet)
+```
+
+---
+
+# Quick Start
+
+```{r load}
+library(llmclean)
+library(dplyr)
+```
+
+## Step 1 — Configure the provider
+
+For this vignette we use offline mode, which requires no API key:
+
+```{r provider}
+set_llm_provider("offline")
+```
+
+With a real LLM provider (not run here):
+
+```{r provider-llm, eval=FALSE}
+# Free Groq tier — fastest inference
+set_llm_provider("groq",
+                 api_key = Sys.getenv("GROQ_API_KEY"),
+                 model   = "llama-3.1-8b-instant")
+
+# OpenAI
+set_llm_provider("openai",
+                 api_key = Sys.getenv("OPENAI_API_KEY"),
+                 model   = "gpt-4o-mini")
+
+# Anthropic Claude
+set_llm_provider("anthropic",
+                 api_key = Sys.getenv("ANTHROPIC_API_KEY"),
+                 model   = "claude-haiku-4-5-20251001")
+
+# Local Ollama (no key needed, model must be installed)
+set_llm_provider("ollama", model = "llama3")
+```
+
+## Step 2 — Inspect the built-in messy datasets
+
+```{r data}
+data(messy_employees)
+data(messy_survey)
+
+cat("messy_employees:", nrow(messy_employees), "rows x",
+    ncol(messy_employees), "cols\n\n")
+
+# Peek at known issues
+cat("Status variants:\n"); print(table(messy_employees$status))
+cat("\nDepartment variants:\n"); print(table(messy_employees$department))
+cat("\nAge outliers:", messy_employees$age[messy_employees$age < 0 |
+                                             messy_employees$age > 100], "\n")
+```
+
+The data contains at least six types of inconsistency across eight
+columns — typical of manually entered HR records.
+
+---
+
+# Stage 1 — Detect Issues
+
+`detect_issues()` calls the LLM (or offline fallback) and returns a
+tidy tibble with one row per detected problem.
+
+```{r detect}
+issues <- detect_issues(messy_employees,
+                         context = "HR employee records. Status values
+                                    should be 'active' or 'inactive'.")
+cat("Issues found:", nrow(issues), "\n\n")
+print(issues[, c("column","row_index","value","issue_type",
+                  "suggestion","confidence")])
+```
+
+## Issue type breakdown
+
+```{r issue-types}
+# Summary by type
+as.data.frame(table(Type = issues$issue_type)) |>
+  dplyr::arrange(dplyr::desc(Freq))
+```
+
+## Case inconsistencies
+
+```{r case-issues}
+# Show all case inconsistencies found
+issues[issues$issue_type == "case",
+       c("column","row_index","value","suggestion","confidence")]
+```
+
+## Typos and near-duplicates (Levenshtein)
+
+The offline detector uses `utils::adist()` to compute Levenshtein edit
+distances between all pairs of unique values in each column. Values
+within 2 edits of a more frequent value are flagged as typos.
+
+```{r typo-issues}
+issues[issues$issue_type == "typo",
+       c("column","row_index","value","suggestion","explanation")]
+```
+
+## Malformed email addresses
+
+```{r format-issues}
+issues[issues$issue_type == "format",
+       c("column","row_index","value","suggestion")]
+```
+
+## Numeric outliers (Tukey outer fence)
+
+```{r outlier-issues}
+issues[issues$issue_type == "outlier",
+       c("column","row_index","value","explanation")]
+```
+
+---
+
+# Stage 2 — Suggest Fixes
+
+`suggest_fixes()` can enrich low-confidence suggestions by re-querying
+the LLM with surrounding row context. In offline mode it returns the
+issues unchanged.
+
+```{r suggest}
+enriched <- suggest_fixes(messy_employees, issues)
+cat("Enriched columns:", paste(names(enriched), collapse = ", "), "\n")
+
+# Show suggestions for status column
+enriched[enriched$column == "status",
+          c("row_index","value","suggestion","alternatives","confidence_revised")]
+```
+
+---
+
+# Stage 3 — Apply Fixes
+
+`apply_fixes()` has two modes:
+
+- **`confirm = FALSE`**: apply all fixes above `min_confidence`
+  automatically (batch mode)
+- **`confirm = TRUE`**: interactive review, one fix at a time
+
+```{r apply-noninteractive}
+# Non-interactive: apply fixes with confidence >= 0.88
+df_clean <- apply_fixes(
+  messy_employees,
+  enriched,
+  confirm        = FALSE,
+  min_confidence = 0.88
+)
+
+cat("Status before:", paste(sort(unique(messy_employees$status)), collapse=", "), "\n")
+cat("Status after: ", paste(sort(unique(df_clean$status)), collapse=", "), "\n\n")
+
+cat("Department before:",
+    paste(sort(unique(messy_employees$department)), collapse=", "), "\n")
+cat("Department after: ",
+    paste(sort(unique(df_clean$department)), collapse=", "), "\n")
+```
+
+## Dry run mode
+
+Before applying anything, preview what would change:
+
+```{r dry-run}
+plan <- apply_fixes(messy_employees, enriched, dry_run = TRUE)
+cat("Planned changes:\n")
+print(plan[, c("column","row_index","current_value","suggestion","issue_type")])
+```
+
+---
+
+# Stage 4 — Offline Detection (No API Key)
+
+`offline_detect()` runs without any LLM using three statistical methods:
+
+1. **Levenshtein distance** (Chaudhuri et al., 2003) for typo detection
+2. **Regex patterns** for email, date, and phone format validation
+3. **Tukey outer fence** (Tukey, 1977) for numeric outlier detection
+
+```{r offline}
+# Works completely offline
+offline_issues <- offline_detect(
+  messy_survey,
+  issue_types      = c("case","typo","format","outlier"),
+  max_edit_distance = 2L
+)
+
+cat("Survey issues found:", nrow(offline_issues), "\n\n")
+offline_issues[, c("column","value","issue_type","suggestion","confidence")]
+```
+
+---
+
+# Stage 5 — Summary Report
+
+`llmclean_report()` produces a structured audit log suitable for
+reproducible data quality documentation.
+
+```{r report}
+rpt <- llmclean_report(messy_employees, df_clean, issues)
+```
+
+```{r report-summary}
+cat("Summary by column and type:\n")
+print(rpt$summary)
+
+cat("\nCell-level changes (first 8):\n")
+print(head(rpt$changes, 8))
+
+cat("\nMetadata:\n")
+cat("  Provider  :", rpt$metadata$provider, "\n")
+cat("  Model     :", rpt$metadata$model, "\n")
+cat("  Detected  :", rpt$metadata$n_total, "\n")
+cat("  Applied   :", rpt$metadata$n_applied, "\n")
+```
+
+---
+
+# Complete Workflow (One Pipeline)
+
+```{r full-pipeline, eval=FALSE}
+library(llmclean)
+
+# 1. Configure provider (use Groq free tier)
+set_llm_provider("groq",
+                 api_key = Sys.getenv("GROQ_API_KEY"),
+                 model   = "llama-3.1-8b-instant")
+
+# 2. Load data
+data(messy_employees)
+
+# 3. Detect semantic issues
+issues <- detect_issues(
+  messy_employees,
+  context = "Employee records. Status: active/inactive. Age: 18-70."
+)
+
+# 4. Enrich low-confidence suggestions
+enriched <- suggest_fixes(messy_employees, issues, n_alternatives = 2L)
+
+# 5. Apply fixes non-interactively
+df_clean <- apply_fixes(messy_employees, enriched,
+                         confirm = FALSE, min_confidence = 0.80)
+
+# 6. Generate audit report
+llmclean_report(messy_employees, df_clean, issues)
+```
+
+---
+
+# API Key Storage Best Practice
+
+Never hardcode API keys in scripts. Store them in `.Renviron`:
+
+```r
+# ~/.Renviron
+OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...
+GROQ_API_KEY=gsk_...
+GOOGLE_API_KEY=AIza...
+```
+
+Then retrieve with `Sys.getenv("OPENAI_API_KEY")`. The `usethis`
+package provides `usethis::edit_r_environ()` to open this file.
+
+---
+
+# Session Information
+
+```{r session}
+sessionInfo()
+```
+
+---
+
+# References
+
+Chaudhuri, S., Ganjam, K., Ganti, V. and Motwani, R. (2003). Robust and
+efficient fuzzy match for online data cleaning. *Proceedings of the 2003
+ACM SIGMOD International Conference on Management of Data*, 313--324.
+<https://doi.org/10.1145/872757.872796>
+
+de Jonge, E. and van der Loo, M. (2013). An introduction to data cleaning
+with R. *Statistics Netherlands Discussion Paper*.
+<https://cran.r-project.org/doc/contrib/de_Jonge+van_der_Loo-Introduction_to_data_cleaning_with_R.pdf>
+
+Levenshtein, V.I. (1966). Binary codes capable of correcting deletions,
+insertions, and reversals. *Soviet Physics Doklady*, 10(8), 707--710.
+
+Müller, H. and Freytag, J.C. (2003). Problems, methods, and challenges in
+comprehensive data cleansing. *Technical Report HUB-IB-164*, Humboldt
+University Berlin.
+
+Tukey, J.W. (1977). *Exploratory Data Analysis*. Addison-Wesley.
+ISBN: 978-0-201-07616-5.
+
+van der Loo, M.P.J. and de Jonge, E. (2018). *Statistical Data Cleaning
+with Applications in R*. John Wiley & Sons.
+<https://doi.org/10.1002/9781118897126>

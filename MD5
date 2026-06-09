@@ -1,4 +1,4 @@
-f5bf3bb47dc444f2fe846635e0178cd2 *DESCRIPTION
+cca7747cf64f94e4d1d1de5a7c9f1402 *DESCRIPTION
 2d0b3962db088439a9160ff9b46c7182 *NAMESPACE
 a4f7c04cdb18a6904765f857b09b4ea4 *R/data.R
 902d123e05ff00a6188315bee0731bfc *R/detect_issues.R
@@ -14,11 +14,11 @@ afbe4209b3bb961ba3e41cbfe79ea507 *build/partial.rdb
 a2ebffbda4f9f4a4adfefe20bc525e8d *data/messy_survey.rda
 f9091a067b85feace90b19cc1f3571c4 *inst/doc/llmclean-intro.R
 3dc626b9af8c67f321724b4ebea2438d *inst/doc/llmclean-intro.Rmd
-6aac64bf53931f036e8b2643b6846200 *inst/doc/llmclean-intro.html
+ecf0358936905579a5cff967b65fbf2c *inst/doc/llmclean-intro.html
 754ab6a291c9bd166552a8d5a58e8df1 *man/apply_fixes.Rd
 675a99d932795f650d64137a98e0ded1 *man/detect_issues.Rd
 68acf5cf092a79cd2c0a838d645b0ec0 *man/get_llm_provider.Rd
-6b8bd7e30d817f941b009b506ca1315a *man/llmclean-package.Rd
+617efacf2f13c5590597343cd8fec59a *man/llmclean-package.Rd
 b97d0bee05040e37151ea8b19a7a8d05 *man/llmclean_report.Rd
 a19f4fa995bdf3db7a5dbd6581a66e24 *man/messy_employees.Rd
 3ef6161bd147e8392446c705c8e87d60 *man/messy_survey.Rd
